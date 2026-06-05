@@ -1,6 +1,6 @@
 [submodule "src/external/KVzip"]
 	path = src/external/KVzip
 	url = https://github.com/snu-mllab/KVzip
-[submodule "src/external/cacheblend-hf-v7"]
-	path = src/external/cacheblend-hf-v7
+[submodule "src/external/cacheblend"]
+	path = src/external/cacheblend
 	url = https://github.com/chjs/cacheblend-hf-v7.git

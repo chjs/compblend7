@@ -82,7 +82,7 @@ load_dataset, build_qa_prompt, compute_f1 = _mq.load_dataset, _mq.build_qa_promp
 sys.path[:] = [p for p in sys.path if p and Path(p).resolve() != _HERE]
 for _p in (
     str(_REPO / "src"),
-    str(_REPO / "src" / "external" / "cacheblend-hf-v7" / "src"),
+    str(_REPO / "src" / "external" / "cacheblend" / "src"),
     str(_REPO / "src" / "external" / "KVzip"),
 ):
     if _p not in sys.path:

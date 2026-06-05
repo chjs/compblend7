@@ -20,7 +20,7 @@ uniform.
 
 Reference for the unmodified algorithm — keep these line numbers in sync
 when v7 changes:
-    src/external/cacheblend-hf-v7/src/cacheblend/fusor.py:193-497
+    src/external/cacheblend/src/cacheblend/fusor.py:193-497
 """
 from __future__ import annotations
 

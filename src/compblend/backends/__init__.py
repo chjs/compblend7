@@ -1,5 +1,5 @@
 """Compression backends — produce pre-RoPE CompressedChunks compatible with
-the cacheblend-hf-v7 KVStore + fusor layout.
+the cacheblend KVStore + fusor layout.
 """
 from compblend.backends.base import (
     CompressedChunk,

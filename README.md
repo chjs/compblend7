@@ -1,6 +1,6 @@
 # compblend7
 
-Compressed KV-cache **blending** for multi-document QA. Reuses `cacheblend-hf-v7`
+Compressed KV-cache **blending** for multi-document QA. Reuses `cacheblend`
 as the CacheBlend core (vendored as a git submodule) and adds a **KVzip
 token-pruning** compression scenario plus importance-guided recompute selectors.
 
@@ -52,7 +52,7 @@ path — the script `chdir`s into its own dir).
 src/
   compblend/                 — selectors, KVzip backend, config, fuse_selective_compblend (fusor)
   external/
-    cacheblend-hf-v7/        — submodule: CacheBlend core (LayerwiseModel, KVStore, precompute)
+    cacheblend/        — submodule: CacheBlend core (LayerwiseModel, KVStore, precompute)
     KVzip/                   — submodule: KVzip compression (importance scoring)
 benchmarks/musique/          — blend_musique_generic_kvzip.py + utils.py + inputs/
 ```
@@ -62,9 +62,9 @@ benchmarks/musique/          — blend_musique_generic_kvzip.py + utils.py + inp
 ```bash
 git clone --recursive https://github.com/chjs/compblend7
 cd compblend7
-grep -v -E '^torch(\s|=|$)' src/external/cacheblend-hf-v7/requirements.txt > /tmp/reqs.txt
+grep -v -E '^torch(\s|=|$)' src/external/cacheblend/requirements.txt > /tmp/reqs.txt
 pip install -r /tmp/reqs.txt
-pip install -e src/external/cacheblend-hf-v7 -e .
+pip install -e src/external/cacheblend -e .
 pip install "transformers==4.51.3"
 pip install -e src/external/KVzip --no-deps
 ```
@@ -111,7 +111,7 @@ Two contributions:
 | A concrete backend (KVzip reconstruction importance) | `src/compblend/backends/kvzip.py` → `KVzipBackend.compress` (importance = KVzip `kv.score`, shape `[L, H_kv, T]`) |
 | **Gated HKVD** (Stage-1 importance gate → Stage-2 HKVD top-k) | `src/compblend/selectors.py::gated_top_k`, dispatched in `fuse_selective_compblend.py::_select_recompute_indices` |
 | RoPE-aware realignment | `fuse_selective_compblend.py` applies `apply_rotary_pos_emb` to cached pre-RoPE K at the **fused** position before deviation/attention |
-| Selective recompute core (recompute top-k, reuse rest, sparse forward) | `fuse_selective_compblend.py` (fork of cacheblend-hf-v7 `fuse_selective`) |
+| Selective recompute core (recompute top-k, reuse rest, sparse forward) | `fuse_selective_compblend.py` (fork of cacheblend `fuse_selective`) |
 | Evaluation (MuSiQue, token-F1, arms, bootstrap CIs) | `benchmarks/musique/blend_musique_generic_kvzip.py` |
 
 Selector arms in the benchmark include `only_hkvd` (HKVD-only baseline),

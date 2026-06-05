@@ -5,17 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "compblend"
 version = "0.5.0.dev0"
-description = "Compressed KV cache blending (token-prune) — cacheblend-hf-v7 core + KVzip backend, importance-guided recompute selectors."
+description = "Compressed KV cache blending (token-prune) — cacheblend core + KVzip backend, importance-guided recompute selectors."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
 authors = [{ name = "ch.jungsik" }]
 dependencies = [
-    # Unpinned at the project level. Use cacheblend-hf-v7's pinned stack on GPU pods.
+    # Unpinned at the project level. Use cacheblend's pinned stack on GPU pods.
     "torch>=2.1",
     "transformers>=4.40",
     # cacheblend (the v7 CacheBlend core) is installed separately from the
-    # submodule at src/external/cacheblend-hf-v7. See README for install order.
+    # submodule at src/external/cacheblend. See README for install order.
 ]
 
 [project.optional-dependencies]

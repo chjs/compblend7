@@ -1,4 +1,4 @@
-"""compblend — compressed KV cache blending on top of cacheblend-hf-v7.
+"""compblend — compressed KV cache blending on top of cacheblend.
 
 Public API is intentionally empty at M0. Modules are added per milestone:
     M1: backends.kvzip            (pre-RoPE capture)
