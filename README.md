@@ -32,17 +32,6 @@ token-F1 with paired bootstrap CIs vs `only_hkvd`.
 
 ## Run (GPU pod)
 
-Convenience runner (sets `PYTHONPATH`, creates `logs/`, picks defaults, tees output):
-
-```bash
-export HF_TOKEN=...                                   # Llama-3.1-8B is gated
-bash scripts/run_musique_kvzip.sh                     # full grid, N=150
-COMPBLEND_MUSIQUE_N=3 COMPBLEND_ARMS=only_hkvd,importance_only \
-    bash scripts/run_musique_kvzip.sh                 # quick smoke
-```
-
-Or invoke the benchmark directly:
-
 ```bash
 export PYTHONPATH=src/external/KVzip:$PYTHONPATH
 CACHEBLEND_MODEL=meta-llama/Llama-3.1-8B-Instruct \
