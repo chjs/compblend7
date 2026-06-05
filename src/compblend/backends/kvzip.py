@@ -58,22 +58,16 @@ class KVzipConfig:
         kv_type: "retain" (default, Stage-1-safe) or "evict". Stage 1 expects
             "retain" because then `kv.key_cache[layer]` is a regular 4D tensor
             and `kv.score` aligns with simple ctx-local indices.
-        level: passed through to KVzip's `kv.prune(level=...)` and folded into
-            the cache key. The backend no longer derives a per-head eviction
-            mask (token-prune-only); the field is retained for prune/scoring
-            compatibility and cache-key stability. Default "pair".
         chunk_id_prefix: identifier prefix in the assembled CompressedChunk.chunk_id.
     """
 
     kv_type: str = "retain"
-    level: str = "pair"
     chunk_id_prefix: str = "kvzip"
 
 
 def kvzip_chunk_id(
     token_ids: list[int] | tuple[int, ...],
     ratio: float,
-    level: str = "pair",
     prefix: str = "kvzip",
     *,
     model_id: str | None = None,
@@ -88,15 +82,15 @@ def kvzip_chunk_id(
 
     Why all these keyword fields: the same token sequence at the same ratio
     produces COMPLETELY DIFFERENT K/V tensors under different models /
-    tokenizers / dtypes. If we cache by `(token_ids, ratio, level)` alone,
+    tokenizers / dtypes. If we cache by `(token_ids, ratio)` alone,
     a precomputed corpus from one model can collide with another model's
     cache entries and the loader will silently return wrong KV.
 
     All extra fields are keyword-only and OPTIONAL for legacy compatibility —
-    if not supplied, the key falls back to the original (token_ids, ratio,
-    level) form. Production callers (KVzipBackend.compress, offline
-    precompute scripts) SHOULD supply them; they will be filled in
-    automatically by `compress()` below.
+    if not supplied, the key falls back to the original (token_ids, ratio)
+    form. Production callers (KVzipBackend.compress, offline precompute
+    scripts) SHOULD supply them; they will be filled in automatically by
+    `compress()` below.
 
     Hardening tip: when sharing a cache directory across runs, always set
     `model_id` and `tokenizer_id` at minimum.
@@ -104,7 +98,6 @@ def kvzip_chunk_id(
     parts = [
         ",".join(str(t) for t in token_ids),
         f"ratio={ratio}",
-        f"level={level}",
         f"algo={algo_version}",
     ]
     # Optional identity fields — only included when supplied, so older keys
@@ -224,12 +217,10 @@ class KVzipBackend(CompressionBackendBase):
             if original_sys is not None:
                 mk.sys_prompt_ids = original_sys
 
-        # ----- 2. Run KVzip pruning to populate kv.score (importance) -----
-        # ratio=1.0 → no eviction, score still computed. We only read the
-        # importance scores; token-pruning happens downstream.
-        kv.prune(ratio=budget.ratio, level=self.kvzip_config.level)
-
-        # ----- 3. Pick the prefill capture (shape[1] == sink + ctx_len) -----
+        # ----- 2. Pick the prefill capture (shape[1] == sink + ctx_len) -----
+        # Importance (kv.score) is populated by prefill(do_score=True) above;
+        # token-pruning happens downstream in the benchmark, so no eviction
+        # step is run here.
         sink_ctx = int(kv.sink) + int(kv.ctx_len)
         pre_rope_k = self._select_prefill_capture(pre_rope_k_all, sink_ctx, "k_proj")
         pre_v = self._select_prefill_capture(pre_v_all, sink_ctx, "v_proj")
@@ -279,7 +270,6 @@ class KVzipBackend(CompressionBackendBase):
                 h.remove()
             mk.sys_prompt_ids = original_sys
 
-        kv.prune(ratio=budget.ratio, level=self.kvzip_config.level)
         n_layers = kv.n_layers
         n_kv_heads = kv.n_heads_kv
         sink = int(kv.sink)
@@ -523,7 +513,6 @@ class KVzipBackend(CompressionBackendBase):
         chunk_id = kvzip_chunk_id(
             chunk_token_ids,
             ratio=budget.ratio,
-            level=self.kvzip_config.level,
             prefix=self.kvzip_config.chunk_id_prefix,
             model_id=self.model_id,
             tokenizer_id=tokenizer_id,
@@ -549,7 +538,6 @@ class KVzipBackend(CompressionBackendBase):
             compression_rate=0.0,             # token-prune happens downstream
             backend_state={
                 "kvzip_ratio": budget.ratio,
-                "kvzip_level": self.kvzip_config.level,
                 "kvzip_kv_type": self.kvzip_config.kv_type,
                 "sys_prompt_len": sink,
                 "ctx_len": ctx_len,

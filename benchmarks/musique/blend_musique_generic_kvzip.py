@@ -226,7 +226,7 @@ def main() -> int:
     lw = LayerwiseModel(MODEL, dtype=DTYPE, attn_implementation=ATTN_IMPL)
     tokenizer, model, device = lw.tokenizer, lw.model, lw.device
     user_open, assistant_open = _resolve_wrapper(MODEL, tokenizer)
-    backend = KVzipBackend(MODEL, KVzipConfig(kv_type="retain", level="pair"))
+    backend = KVzipBackend(MODEL, KVzipConfig(kv_type="retain"))
     os.environ["COMPBLEND_KVZIP_NO_SYS_PROMPT"] = "1"   # isolated per-chunk compress (sink=0)
 
     eval_dataset = load_dataset("inputs/musique_s.json")
