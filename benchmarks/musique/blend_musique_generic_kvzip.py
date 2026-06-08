@@ -60,6 +60,7 @@ Env vars (superset of blend_musique_generic.py):
     COMPBLEND_RECOMP_RATIOS  csv recompute fractions (default "0.2,0.15,0.1,0.05")
     COMPBLEND_GATE_PCT       gate percentile for gated arms (default 0.5)
     COMPBLEND_DEEP_LO/HI     deep importance band, half-open (default 15 / 31)
+    COMPBLEND_CHUNK_NORM     per-chunk importance normalization: rank|none (default rank)
     COMPBLEND_OUT            json summary path (default logs/blend_musique_kvzip.json)
 
 Run (standalone):
@@ -133,6 +134,7 @@ GATE_PCT = float(os.environ.get("COMPBLEND_GATE_PCT", "0.5"))
 HKVD_REDUCE = os.environ.get("COMPBLEND_HKVD_REDUCE", "sum")         # sum | max (over-head HKVD reduce)
 DEEP_LO = int(os.environ.get("COMPBLEND_DEEP_LO", "15"))
 DEEP_HI = int(os.environ.get("COMPBLEND_DEEP_HI", "31"))
+CHUNK_NORM = os.environ.get("COMPBLEND_CHUNK_NORM", "rank")          # none | rank (matches config default)
 OUT = Path(os.environ.get("COMPBLEND_OUT", str(_REPO / "logs" / "blend_musique_kvzip.json")))
 
 # Instruction prompts — VERBATIM from blend_musique.py (experiment definition).
@@ -235,7 +237,7 @@ def _run_compblend(lw, chunks, kv_store, selector, recompute_ratio, *, agg="chec
         check_layer=CHECK_LAYER, recompute_ratio=recompute_ratio + prune, selector=selector,
         gate_percentile=GATE_PCT, importance_prune_ratio=prune, importance_aggregation=agg,
         deep_layer_lo=DEEP_LO, deep_layer_hi=DEEP_HI, hkvd_head_reduce=HKVD_REDUCE,
-        chunk_normalization="rank")
+        chunk_normalization=CHUNK_NORM)
     out = fuse_selective_compblend(lw, chunks, kv_store, cfg,
                                    return_layerwise_output=True, last_logits_only=True)
     return out
@@ -266,13 +268,13 @@ def main() -> int:
         ("importance_only",     "importance_only",     "all_layer",     0.0),  # top-k by importance, NO HKVD
         ("importance_only_max", "importance_only",     "all_layer_max", 0.0),  # top-k by MAX-agg importance
         ("random",              "random",              "check_layer",   0.0),  # control: random top-k
-        ("anti_importance",     "importance_only_low", "all_layer",     0.0),  # control: bottom-k importance
+        ("anti_importance",     "anti_importance", "all_layer",     0.0),  # control: bottom-k importance
         ("hkvd_hi_imp",         "hkvd_then_imp_prune",      "all_layer", 0.15),  # split: HKVD-pool top-2k, keep HIGH-imp k
         ("hkvd_lo_imp",         "hkvd_then_imp_prune_high", "all_layer", 0.15),  # split: HKVD-pool top-2k, keep LOW-imp k
-        ("gated_all_hkvd",      "gated_top_k",         "all_layer",     0.0),    # mean over (layer,head)
-        ("gated_all_max_hkvd",  "gated_top_k",         "all_layer_max", 0.0),    # MAX over (layer,head)
-        ("gated_deep_hkvd",     "gated_top_k",         "deep",          0.0),    # mean over deep,head
-        ("gated_deep_max_hkvd", "gated_top_k",         "deep_max",      0.0),    # MAX over deep,head
+        ("gated_all_hkvd",      "gated_hkvd",         "all_layer",     0.0),    # mean over (layer,head)
+        ("gated_all_max_hkvd",  "gated_hkvd",         "all_layer_max", 0.0),    # MAX over (layer,head)
+        ("gated_deep_hkvd",     "gated_hkvd",         "deep",          0.0),    # mean over deep,head
+        ("gated_deep_max_hkvd", "gated_hkvd",         "deep_max",      0.0),    # MAX over deep,head
         ("hkvd_prune",          "hkvd_then_imp_prune", "check_layer",   PRUNE),  # HKVD 20% → drop low-imp → 15%
         ("hkvd_prune_max",      "hkvd_then_imp_prune", "all_layer_max", PRUNE),  # same, MAX-importance prune
     ]

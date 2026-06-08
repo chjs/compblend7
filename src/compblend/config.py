@@ -18,13 +18,13 @@ from typing import Literal
 
 SelectorKind = Literal[
     "hkvd_only",          # v7 baseline — top-k by deviation only
-    "importance_only",    # ablation — top-k by importance only
-    "gated_top_k",        # paper §3 default — importance gate then HKVD top-k
+    "importance_only",    # FDI — top-k by importance only (no HKVD)
+    "gated_hkvd",         # paper §3 default — importance gate then HKVD top-k
     "hkvd_then_imp_prune",  # ablation — HKVD top-k FIRST, then drop lowest-importance (keep HIGH-imp)
     "hkvd_then_imp_prune_high",  # split-test control — HKVD pre-select, keep LOW-imp (drop high-imp)
     "hkvd_imp_exclude",   # reuse-safe — EXCLUDE high-importance (stable) from recompute, HKVD within the rest
     "random",             # control — recompute a RANDOM top-k (no signal); proves importance/HKVD carry signal
-    "importance_only_low",# control (anti) — recompute the LOWEST-importance top-k
+    "anti_importance",    # control (anti) — recompute the LOWEST-importance top-k
 ]
 
 
@@ -60,9 +60,9 @@ class CompBlendConfig:
     recompute_ratio: float = 0.15
 
     # Token selector. Default is paper §3 Gated HKVD.
-    selector: SelectorKind = "gated_top_k"
+    selector: SelectorKind = "gated_hkvd"
 
-    # For gated_top_k: importance percentile threshold over non-forced,
+    # For gated_hkvd: importance percentile threshold over non-forced,
     # non-structural candidates. Keeps the top `gate_percentile` fraction.
     # 1.0 → no gating; 0.0 → no gating (everything passes); typical 0.5.
     gate_percentile: float = 0.5
@@ -77,7 +77,7 @@ class CompBlendConfig:
     # backend's [n_layers, H_kv, chunk_len] importance. "check_layer" = layer
     # `check_layer` only, mean over heads (current). "all_layer" = mean over ALL
     # layers AND heads (CompBlend-old style — richer global salience). Only
-    # affects selectors that use importance (gated_top_k, hkvd_then_imp_prune).
+    # affects selectors that use importance (gated_hkvd, hkvd_then_imp_prune).
     importance_aggregation: ImportanceAggregation = "check_layer"
 
     # When importance_aggregation == "deep", aggregate importance over layers
@@ -98,9 +98,12 @@ class CompBlendConfig:
     exempt_structural: bool = True
 
     # How per-chunk importance vectors are combined into the fused-prompt
-    # `importance_scores`. "none" concatenates raw; "rank" applies within-
-    # chunk percentile rank before concat (length-fair).
-    chunk_normalization: ChunkNormalization = "none"
+    # `importance_scores`. "rank" (default) applies within-chunk percentile
+    # rank before concat; "none" concatenates raw. Default is "rank" because
+    # CompBlend compresses each chunk in ISOLATION, so raw importance is only
+    # comparable WITHIN a chunk — ranking per chunk is the principled basis
+    # for the cross-chunk global top-k the selectors run.
+    chunk_normalization: ChunkNormalization = "rank"
 
     def __post_init__(self) -> None:
         if not (0.0 <= self.recompute_ratio <= 1.0):
@@ -117,9 +120,9 @@ class CompBlendConfig:
             )
         if self.check_layer < 0:
             raise ValueError(f"check_layer must be >= 0, got {self.check_layer}")
-        if self.selector not in ("hkvd_only", "importance_only", "gated_top_k",
+        if self.selector not in ("hkvd_only", "importance_only", "gated_hkvd",
                                  "hkvd_then_imp_prune", "hkvd_then_imp_prune_high",
-                                 "hkvd_imp_exclude", "random", "importance_only_low"):
+                                 "hkvd_imp_exclude", "random", "anti_importance"):
             raise ValueError(f"unknown selector: {self.selector!r}")
         if self.chunk_normalization not in ("none", "rank"):
             raise ValueError(

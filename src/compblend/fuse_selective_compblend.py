@@ -2,10 +2,11 @@
 
 One extension over v7:
 
-1. **Gated HKVD selector** (paper §3) — `selectors.gated_top_k` runs over
-   deviation+importance instead of v7's HKVD-only top-k. Gap positions
-   (chunks not in KVStore) and the last position are passed as
-   `forced_mask`. Structural (window) positions are passed as
+1. **Gated HKVD selector** (paper §3) — `selectors.gated_hkvd` runs over
+   deviation+importance instead of v7's HKVD-only top-k. Selection is
+   dispatched through `selectors.select_recompute_indices(config, ...)`.
+   Gap positions (chunks not in KVStore) and the last position are passed
+   as `forced_mask`. Structural (window) positions are passed as
    `structural_mask`.
 
 This is the TOKEN-PRUNE-ONLY variant: compression is head-uniform (whole
@@ -15,7 +16,7 @@ recompute layers is the plain sparse-causal slice
 eviction overlay.
 
 The function falls back gracefully when KVStore entries are pure v7-style
-(no importance) — `gated_top_k` degenerates to HKVD-only when importance is
+(no importance) — `gated_hkvd` degenerates to HKVD-only when importance is
 uniform.
 
 Reference for the unmodified algorithm — keep these line numbers in sync
@@ -70,10 +71,7 @@ from cacheblend.kv_store import KVStore
 from cacheblend.model import LayerwiseOutput
 
 from compblend.config import CompBlendConfig
-from compblend.selectors import (
-    chunk_internal_rank, gated_top_k, hkvd_then_importance_prune,
-    hkvd_importance_exclude, select_topk_sorted,
-)
+from compblend.selectors import chunk_internal_rank, select_recompute_indices
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -99,155 +97,6 @@ def _get_apply_rope(hf_model: Any):
         # Fallback to mistral — every RoPE-using HF model uses identical math.
         from transformers.models.mistral.modeling_mistral import apply_rotary_pos_emb
     return apply_rotary_pos_emb
-
-
-def _select_recompute_indices(
-    deviations: torch.Tensor,
-    importance: torch.Tensor,
-    recompute_k: int,
-    config: CompBlendConfig,
-    structural_mask: torch.Tensor,
-    forced_mask: torch.Tensor,
-    eligible_mask: torch.Tensor | None = None,
-) -> torch.Tensor:
-    """Dispatch on `config.selector`. Returns sorted-ascending int64 indices.
-
-    `eligible_mask` is the compression-aware "candidate pool". Under
-    token-prune compression every stored position is head-uniformly valid, so
-    it is all-True over the fused prompt. It is applied ONLY to selectors that
-    should respect compression's intent:
-      - `hkvd_only`        : ignores eligible_mask (v7/LMCache baseline —
-                              free to pick evicted positions, by design).
-      - `importance_only`  : naturally avoids evicted (importance=0 there);
-                              eligible_mask still applied for explicitness.
-      - `gated_top_k`      : restricts candidates to eligible_mask.
-                              Paper §3 alignment: "trust compression".
-    """
-    structural_eff = structural_mask if config.exempt_structural else None
-
-    if config.selector == "hkvd_only":
-        # naive HKVD — does NOT honor eligible_mask (by design).
-        # Picks top-k by deviation regardless of compression state. At
-        # heavy compression this tends to pick evicted positions (large
-        # ‖K_fresh − 0‖²). Functionally that "recovers" them via sparse
-        # forward, but it violates the paper's principle of trusting
-        # compression. Kept as a baseline for comparison.
-        dev = deviations.clone()
-        if forced_mask is not None and bool(forced_mask.any().item()):
-            dev[forced_mask] = float("inf")
-        if structural_eff is not None and bool(structural_eff.any().item()):
-            dev[structural_eff] = float("-inf")
-        target_k = max(
-            recompute_k,
-            int(forced_mask.sum().item()) if forced_mask is not None else 0,
-        )
-        return select_topk_sorted(dev, target_k)
-
-    if config.selector == "importance_only":
-        scores = importance.clone()
-        if forced_mask is not None and bool(forced_mask.any().item()):
-            scores[forced_mask] = float("inf")
-        if structural_eff is not None and bool(structural_eff.any().item()):
-            scores[structural_eff] = float("-inf")
-        # Explicit eligibility (importance=0 at evicted naturally, but
-        # explicit guard prevents picking those when ties occur).
-        if eligible_mask is not None:
-            not_eligible = (~eligible_mask) & (
-                forced_mask.logical_not()
-                if forced_mask is not None
-                else torch.ones_like(eligible_mask)
-            )
-            scores = torch.where(
-                not_eligible, torch.full_like(scores, float("-inf")), scores,
-            )
-        target_k = max(
-            recompute_k,
-            int(forced_mask.sum().item()) if forced_mask is not None else 0,
-        )
-        return select_topk_sorted(scores, target_k)
-
-    if config.selector in ("random", "importance_only_low"):
-        # controls: prove importance/HKVD carry real signal.
-        #   random            → uniform-random top-k (deterministic seed for reproducibility)
-        #   importance_only_low → BOTTOM-k by importance (anti-importance)
-        if config.selector == "importance_only_low":
-            scores = (-importance).clone()
-        else:
-            g = torch.Generator(device=importance.device).manual_seed(1234)
-            scores = torch.rand(importance.shape, generator=g, device=importance.device)
-        if forced_mask is not None and bool(forced_mask.any().item()):
-            scores[forced_mask] = float("inf")
-        if structural_eff is not None and bool(structural_eff.any().item()):
-            scores[structural_eff] = float("-inf")
-        if eligible_mask is not None:
-            not_eligible = (~eligible_mask) & (
-                forced_mask.logical_not() if forced_mask is not None
-                else torch.ones_like(eligible_mask))
-            scores = torch.where(not_eligible, torch.full_like(scores, float("-inf")), scores)
-        target_k = max(
-            recompute_k,
-            int(forced_mask.sum().item()) if forced_mask is not None else 0,
-        )
-        return select_topk_sorted(scores, target_k)
-
-    if config.selector == "gated_top_k":
-        return gated_top_k(
-            hkvd_scores=deviations,
-            importance_scores=importance,
-            recompute_k=recompute_k,
-            gate_percentile=config.gate_percentile,
-            structural_mask=structural_eff,
-            forced_mask=forced_mask,
-            eligible_mask=eligible_mask,
-        )
-
-    if config.selector == "hkvd_then_imp_prune":
-        # recompute_k is the HKVD PRE-SELECT count (= total_seq * recompute_ratio,
-        # e.g. 0.20). Drop the lowest-importance importance_prune_ratio fraction of
-        # TOTAL (e.g. 0.05) from it → final ≈ recompute_ratio − prune (e.g. 0.15).
-        n_total = int(deviations.numel())
-        prune_k = int(n_total * config.importance_prune_ratio)
-        return hkvd_then_importance_prune(
-            hkvd_scores=deviations,
-            importance_scores=importance,
-            recompute_k=recompute_k,
-            prune_k=prune_k,
-            structural_mask=structural_eff,
-            forced_mask=forced_mask,
-            eligible_mask=eligible_mask,
-        )
-
-    if config.selector == "hkvd_then_imp_prune_high":
-        # SPLIT-TEST control: HKVD pre-select (recompute_k), then keep the LOW-importance
-        # survivors (drop the highest-importance prune_k). Tests whether the high-deviation
-        # but low-importance tokens contribute to the answer.
-        n_total = int(deviations.numel())
-        prune_k = int(n_total * config.importance_prune_ratio)
-        return hkvd_then_importance_prune(
-            hkvd_scores=deviations,
-            importance_scores=importance,
-            recompute_k=recompute_k,
-            prune_k=prune_k,
-            structural_mask=structural_eff,
-            forced_mask=forced_mask,
-            eligible_mask=eligible_mask,
-            keep_low=True,
-        )
-
-    if config.selector == "hkvd_imp_exclude":
-        # Reuse-safe: exclude the top `gate_percentile` by importance (stable tokens),
-        # HKVD top-k among the remaining lower-importance pool.
-        return hkvd_importance_exclude(
-            hkvd_scores=deviations,
-            importance_scores=importance,
-            recompute_k=recompute_k,
-            exclude_percentile=config.gate_percentile,
-            structural_mask=structural_eff,
-            forced_mask=forced_mask,
-            eligible_mask=eligible_mask,
-        )
-
-    raise ValueError(f"unknown selector: {config.selector!r}")
 
 
 def _full_fresh_layers(
@@ -438,7 +287,7 @@ def fuse_selective_compblend(
         flags["selector"] = config.selector
         flags["gate_percentile"] = (
             float(config.gate_percentile)
-            if config.selector == "gated_top_k"
+            if config.selector == "gated_hkvd"
             else None
         )
         flags["recompute_ratio"] = float(config.recompute_ratio)
@@ -593,11 +442,11 @@ def fuse_selective_compblend(
         forced_mask[-1] = True
 
         recompute_k = max(int(total_seq * config.recompute_ratio), 1)
-        top_indices = _select_recompute_indices(
-            deviations=deviations,
-            importance=importance_full,
-            recompute_k=recompute_k,
-            config=config,
+        top_indices = select_recompute_indices(
+            config,
+            deviations,
+            importance_full,
+            recompute_k,
             structural_mask=structural_full,
             forced_mask=forced_mask,
             eligible_mask=eligible_full,
@@ -668,11 +517,11 @@ def fuse_selective_compblend(
                 "selector": str(config.selector),
                 "gate_percentile": (
                     float(config.gate_percentile)
-                    if config.selector == "gated_top_k"
+                    if config.selector == "gated_hkvd"
                     else None
                 ),
                 "gate_is_active": (
-                    config.selector == "gated_top_k"
+                    config.selector == "gated_hkvd"
                     and 0.0 < float(config.gate_percentile) < 1.0
                 ),
                 # Distribution diagnostics
