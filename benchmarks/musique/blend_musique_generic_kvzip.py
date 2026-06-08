@@ -15,16 +15,37 @@ sparse-causal slice (no per-head attention mask is ever needed).
 
 Arms compared (all share the dataset / prompt / chunking / token-F1 of the original)
 ------------------------------------------------------------------------------------
-  full_prefill        uncompressed chunks recombined → full prefill. This is the
-                      CacheBlend-paper "full prefill" — the best-score ROOFLINE.
+  full_prefill        chunk token_ids concatenated → one standard prefill from
+                      scratch (NO KV reuse, NO precomputed/compressed chunk KV —
+                      all KV is recomputed). The chunks are used only as the token
+                      container so this sees the IDENTICAL token sequence as the
+                      other arms (fair comparison, no boundary-tokenization confound).
+                      This is the CacheBlend-paper "full prefill" — best-score ROOFLINE.
   full_reuse          uncompressed per-chunk KV recombined → reuse, NO recompute.
   full_reuse_kvzip    KVzip-token-pruned per-chunk KV recombined → reuse, NO recompute.
-  only_hkvd           pruned chunks → HKVD top-k selective recompute (CacheBlend).
-  gated_all_hkvd      pruned chunks → importance gate (mean over ALL layers) then HKVD.
-  gated_deep_hkvd     pruned chunks → importance gate (mean over layers 15..30) then HKVD.
+
+  Blending arms (token-pruned chunks → select top-k tokens → selective recompute):
+  selectors —
+  only_hkvd           HKVD top-k by deviation at check_layer (CacheBlend baseline).
+  importance_only     top-k by MEAN KVzip importance, NO HKVD (this is FDI — the
+                      key comparison; importance as the recompute selector).
+  importance_only_max top-k by MAX-aggregated KVzip importance, NO HKVD.
+  random              control: random top-k.
+  anti_importance     control: BOTTOM-k by importance (should be worst).
+  split-test (HKVD pre-pools 2k, then importance keeps k) —
+  hkvd_hi_imp         keep the HIGH-importance half of the HKVD pool.
+  hkvd_lo_imp         keep the LOW-importance half of the HKVD pool.
+  gated (Gated HKVD: importance gate, then HKVD top-k within the gate) —
+  gated_all_hkvd      gate = mean importance over ALL (layer,head).
+  gated_all_max_hkvd  gate = MAX importance over ALL (layer,head).
+  gated_deep_hkvd     gate = mean importance over deep layers (COMPBLEND_DEEP_LO..HI).
+  gated_deep_max_hkvd gate = MAX importance over deep layers.
+  prune (HKVD oversamples rr+PRUNE, then drops the lowest-importance PRUNE) —
+  hkvd_prune          drop by mean importance.    hkvd_prune_max  drop by MAX importance.
+  (Subset-selectable at runtime via COMPBLEND_ARMS, e.g. "only_hkvd,importance_only".)
 
 full_prefill / full_reuse are kvzip-ratio independent (computed once). full_reuse_kvzip
-is recompute-ratio independent (one per kvzip ratio). The 3 blending arms run over the
+is recompute-ratio independent (one per kvzip ratio). The blending arms run over the
 full kvzip_ratio × recompute_ratio grid. (A `prefill_kvzip` arm — full-prefill of the
 token-pruned survivors — was intentionally dropped: full-prefilling a token-depleted
 context is not a meaningful upper bound; `full_prefill` is the roofline.)
@@ -276,6 +297,10 @@ def main() -> int:
         doc_slice = slice(1, 1 + len(doc_prompts))
 
         # ---- uncompressed references ----
+        # full_prefill: recompute ALL KV from scratch over the concatenated token
+        # sequence. Uses only chunk token_ids (via fused_input_ids); does NOT use
+        # cmp_full (built below) or any cached/compressed KV. Runs before cmp_full
+        # exists, precisely because it needs none of it.
         out = fuse_full_recompute(lw, chunks, return_layerwise_output=True)
         res = _greedy_decode(model, tokenizer, out.logits, out.past_key_values, device)
         f1["full_prefill"].append(max(compute_f1(res, a, tokenizer) for a in answers))
