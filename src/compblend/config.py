@@ -17,13 +17,10 @@ SelectorKind = Literal[
 ]
 
 
-ImportanceAggregation = Literal[
-    "check_layer",   # default — importance at check_layer only, mean over heads
-    "all_layer",     # mean over ALL layers AND heads
-    "deep",          # mean over DEEP layers [L//4, 3L//4) and heads
-    "all_layer_max", # MAX over ALL (layer, head): per-(layer,head) rank-normalized then max —
-                     # "salient in ANY head/layer" (avoids the mean's blur of single-head salience)
-    "deep_max",      # same MAX reduction but over DEEP layers only
+ImportanceReduce = Literal[
+    "mean",   # mean over ALL layers AND heads
+    "max",    # per-(layer,head) rank-normalized across tokens, then max over ALL
+              # (layer, head) — "salient in ANY head/layer"
 ]
 
 
@@ -59,17 +56,11 @@ class CompBlendConfig:
     # recompute_ratio − importance_prune_ratio (e.g. 0.20 − 0.05 = 0.15). 0.0 → no prune.
     importance_prune_ratio: float = 0.0
 
-    # How per-token importance is aggregated from the backend's
-    # [n_layers, H_kv, chunk_len] importance. "check_layer" = check_layer only,
-    # mean over heads. "all_layer" = mean over ALL layers AND heads. Only
-    # affects selectors that use importance (gated_hkvd, hkvd_then_imp_prune).
-    importance_aggregation: ImportanceAggregation = "check_layer"
-
-    # When importance_aggregation == "deep", aggregate importance over layers
-    # [deep_layer_lo, deep_layer_hi) (half-open). If both are None, fall back to
-    # the default middle band [L//4, 3L//4). E.g. lo=15, hi=31 → layers 15..30.
-    deep_layer_lo: int | None = None
-    deep_layer_hi: int | None = None
+    # How importance is reduced from the backend's [n_layers, H_kv, chunk_len]
+    # tensor to a per-token score. Always over ALL layers and heads (importance
+    # is full-depth by construction); "mean" or "max". Affects selectors that
+    # use importance (importance_only, gated_hkvd, hkvd_then_imp_prune).
+    importance_reduce: ImportanceReduce = "mean"
 
     # How HKVD deviation is reduced over heads into a per-token score. "sum"
     # (default) = sum of squared (K_fresh−K_cached) over all heads*dims. "max" =
@@ -111,8 +102,7 @@ class CompBlendConfig:
             raise ValueError(
                 f"unknown chunk_normalization: {self.chunk_normalization!r}"
             )
-        if self.importance_aggregation not in ("check_layer", "all_layer", "deep",
-                                               "all_layer_max", "deep_max"):
+        if self.importance_reduce not in ("mean", "max"):
             raise ValueError(
-                f"unknown importance_aggregation: {self.importance_aggregation!r}"
+                f"unknown importance_reduce: {self.importance_reduce!r}"
             )

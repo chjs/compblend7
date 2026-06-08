@@ -19,7 +19,7 @@ Arms compared (all share the dataset / prompt / chunking / token-F1 of the origi
                       all KV is recomputed). The chunks are used only as the token
                       container so this sees the IDENTICAL token sequence as the
                       other arms (fair comparison, no boundary-tokenization confound).
-                      This is the CacheBlend-paper "full prefill" — best-score ROOFLINE.
+                      This is the full-prefill ROOFLINE (best score).
   full_reuse          uncompressed per-chunk KV recombined → reuse, NO recompute.
   full_reuse_kvzip    KVzip-token-pruned per-chunk KV recombined → reuse, NO recompute.
 
@@ -35,10 +35,8 @@ Arms compared (all share the dataset / prompt / chunking / token-F1 of the origi
   hkvd_hi_imp         keep the HIGH-importance half of the HKVD pool.
   hkvd_lo_imp         keep the LOW-importance half of the HKVD pool.
   gated (Gated HKVD: importance gate, then HKVD top-k within the gate) —
-  gated_all_hkvd      gate = mean importance over ALL (layer,head).
-  gated_all_max_hkvd  gate = MAX importance over ALL (layer,head).
-  gated_deep_hkvd     gate = mean importance over deep layers (COMPBLEND_DEEP_LO..HI).
-  gated_deep_max_hkvd gate = MAX importance over deep layers.
+  gated_all_hkvd      gate = mean importance over all (layer,head).
+  gated_all_max_hkvd  gate = MAX importance over all (layer,head).
   prune (HKVD oversamples rr+PRUNE, then drops the lowest-importance PRUNE) —
   hkvd_prune          drop by mean importance.    hkvd_prune_max  drop by MAX importance.
   (Subset-selectable at runtime via COMPBLEND_ARMS, e.g. "only_hkvd,importance_only".)
@@ -56,7 +54,6 @@ Env vars:
     COMPBLEND_KVZIP_RATIOS   csv keep-fractions     (default "0.5,0.4,0.3,0.2,0.1")
     COMPBLEND_RECOMP_RATIOS  csv recompute fractions (default "0.2,0.15,0.1,0.05")
     COMPBLEND_GATE_PCT       gate percentile for gated arms (default 0.5)
-    COMPBLEND_DEEP_LO/HI     deep importance band, half-open (default 15 / 31)
     COMPBLEND_CHUNK_NORM     per-chunk importance normalization: rank|none (default rank)
     COMPBLEND_OUT            json summary path (default logs/blend_musique_kvzip.json)
 
@@ -129,8 +126,6 @@ KVZIP_RATIOS = [float(x) for x in os.environ.get("COMPBLEND_KVZIP_RATIOS", "0.5,
 RECOMP_RATIOS = [float(x) for x in os.environ.get("COMPBLEND_RECOMP_RATIOS", "0.2,0.15,0.1,0.05").split(",") if x.strip()]
 GATE_PCT = float(os.environ.get("COMPBLEND_GATE_PCT", "0.5"))
 HKVD_REDUCE = os.environ.get("COMPBLEND_HKVD_REDUCE", "sum")         # sum | max (over-head HKVD reduce)
-DEEP_LO = int(os.environ.get("COMPBLEND_DEEP_LO", "15"))
-DEEP_HI = int(os.environ.get("COMPBLEND_DEEP_HI", "31"))
 CHUNK_NORM = os.environ.get("COMPBLEND_CHUNK_NORM", "rank")          # none | rank (matches config default)
 OUT = Path(os.environ.get("COMPBLEND_OUT", str(_REPO / "logs" / "blend_musique_kvzip.json")))
 
@@ -227,14 +222,13 @@ def _entry_chunk(cmp: CompressedChunk) -> Chunk:
                  chunk_id=cmp.chunk_id)
 
 
-def _run_compblend(lw, chunks, kv_store, selector, recompute_ratio, *, agg="check_layer", prune=0.0):
+def _run_compblend(lw, chunks, kv_store, selector, recompute_ratio, *, reduce="mean", prune=0.0):
     # for prune selectors, recompute_ratio is the HKVD PRE-SELECT (rr + prune); dropping the
     # lowest-importance `prune` fraction yields final recompute = rr. prune=0 → no change.
     cfg = CompBlendConfig(
         check_layer=CHECK_LAYER, recompute_ratio=recompute_ratio + prune, selector=selector,
-        gate_percentile=GATE_PCT, importance_prune_ratio=prune, importance_aggregation=agg,
-        deep_layer_lo=DEEP_LO, deep_layer_hi=DEEP_HI, hkvd_head_reduce=HKVD_REDUCE,
-        chunk_normalization=CHUNK_NORM)
+        gate_percentile=GATE_PCT, importance_prune_ratio=prune, importance_reduce=reduce,
+        hkvd_head_reduce=HKVD_REDUCE, chunk_normalization=CHUNK_NORM)
     out = fuse_selective_compblend(lw, chunks, kv_store, cfg,
                                    return_layerwise_output=True, last_logits_only=True)
     return out
@@ -242,7 +236,7 @@ def _run_compblend(lw, chunks, kv_store, selector, recompute_ratio, *, agg="chec
 
 def main() -> int:
     print(f"[kvzip] model={MODEL} dtype={DTYPE} check_layer={CHECK_LAYER} "
-          f"kvzip_ratios={KVZIP_RATIOS} recomp={RECOMP_RATIOS} deep=[{DEEP_LO},{DEEP_HI})", flush=True)
+          f"kvzip_ratios={KVZIP_RATIOS} recomp={RECOMP_RATIOS}", flush=True)
     lw = LayerwiseModel(MODEL, dtype=DTYPE, attn_implementation=ATTN_IMPL)
     tokenizer, model, device = lw.tokenizer, lw.model, lw.device
     user_open, assistant_open = _resolve_wrapper(MODEL, tokenizer)
@@ -256,24 +250,24 @@ def main() -> int:
     print(f"[kvzip] {len(eval_dataset)} examples", flush=True)
 
     # score accumulators
-    # blending arms: (name, selector, importance_aggregation, prune_ratio).
+    # blending arms: (name, selector, importance_reduce, prune_ratio).
+    # importance_reduce ∈ {mean, max} (always over all layers+heads); ignored by
+    # selectors that don't use importance (hkvd_only, random).
     # prune arms = HKVD pre-select (rr + prune) then drop the lowest-importance `prune`
     # fraction → final recompute = rr (matches the other arms for a fair comparison).
     PRUNE = 0.05
     BLEND_ARMS = [
-        ("only_hkvd",           "hkvd_only",           "check_layer",   0.0),
-        ("importance_only",     "importance_only",     "all_layer",     0.0),  # top-k by importance, NO HKVD
-        ("importance_only_max", "importance_only",     "all_layer_max", 0.0),  # top-k by MAX-agg importance
-        ("random",              "random",              "check_layer",   0.0),  # control: random top-k
-        ("anti_importance",     "anti_importance", "all_layer",     0.0),  # control: bottom-k importance
-        ("hkvd_hi_imp",         "hkvd_then_imp_prune",      "all_layer", 0.15),  # split: HKVD-pool top-2k, keep HIGH-imp k
-        ("hkvd_lo_imp",         "hkvd_then_imp_prune_high", "all_layer", 0.15),  # split: HKVD-pool top-2k, keep LOW-imp k
-        ("gated_all_hkvd",      "gated_hkvd",         "all_layer",     0.0),    # mean over (layer,head)
-        ("gated_all_max_hkvd",  "gated_hkvd",         "all_layer_max", 0.0),    # MAX over (layer,head)
-        ("gated_deep_hkvd",     "gated_hkvd",         "deep",          0.0),    # mean over deep,head
-        ("gated_deep_max_hkvd", "gated_hkvd",         "deep_max",      0.0),    # MAX over deep,head
-        ("hkvd_prune",          "hkvd_then_imp_prune", "check_layer",   PRUNE),  # HKVD 20% → drop low-imp → 15%
-        ("hkvd_prune_max",      "hkvd_then_imp_prune", "all_layer_max", PRUNE),  # same, MAX-importance prune
+        ("only_hkvd",           "hkvd_only",                "mean", 0.0),
+        ("importance_only",     "importance_only",          "mean", 0.0),   # top-k by importance, NO HKVD
+        ("importance_only_max", "importance_only",          "max",  0.0),   # top-k by MAX-reduced importance
+        ("random",              "random",                   "mean", 0.0),   # control: random top-k
+        ("anti_importance",     "anti_importance",          "mean", 0.0),   # control: bottom-k importance
+        ("hkvd_hi_imp",         "hkvd_then_imp_prune",      "mean", 0.15),  # split: HKVD-pool, keep HIGH-imp
+        ("hkvd_lo_imp",         "hkvd_then_imp_prune_high", "mean", 0.15),  # split: HKVD-pool, keep LOW-imp
+        ("gated_all_hkvd",      "gated_hkvd",               "mean", 0.0),   # gate by mean importance
+        ("gated_all_max_hkvd",  "gated_hkvd",               "max",  0.0),   # gate by MAX importance
+        ("hkvd_prune",          "hkvd_then_imp_prune",      "mean", PRUNE), # HKVD pre-select → drop low-imp
+        ("hkvd_prune_max",      "hkvd_then_imp_prune",      "max",  PRUNE), # same, MAX-importance prune
     ]
     # optional subset filter: COMPBLEND_ARMS="only_hkvd,gated_all_hkvd,importance_only"
     _arms_env = os.environ.get("COMPBLEND_ARMS", "").strip()
@@ -347,8 +341,8 @@ def main() -> int:
 
             # blending arms over recompute ratios
             for rr in RECOMP_RATIOS:
-                for arm, sel, agg, prune in BLEND_ARMS:
-                    out = _run_compblend(lw, pchunks, kv_r, sel, rr, agg=agg, prune=prune)
+                for arm, sel, reduce, prune in BLEND_ARMS:
+                    out = _run_compblend(lw, pchunks, kv_r, sel, rr, reduce=reduce, prune=prune)
                     res = _greedy_decode(model, tokenizer, out.logits, out.past_key_values, device)
                     f1[f"{arm}@kv{r}_rc{rr}"].append(max(compute_f1(res, a, tokenizer) for a in answers))
                     del out
@@ -382,7 +376,7 @@ def main() -> int:
     summary = {
         "config": {"model": MODEL, "n": len(eval_dataset), "check_layer": CHECK_LAYER,
                    "kvzip_ratios": KVZIP_RATIOS, "recompute_ratios": RECOMP_RATIOS,
-                   "gate_percentile": GATE_PCT, "deep_band": [DEEP_LO, DEEP_HI],
+                   "gate_percentile": GATE_PCT,
                    "compress_mode": "token_prune", "hkvd_reduce": HKVD_REDUCE,
                    "max_new_tokens": MAX_NEW_TOKENS, "metric": "token_f1"},
         "f1_mean": means,
