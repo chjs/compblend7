@@ -267,8 +267,10 @@ def main() -> int:
         ("importance_only_max", "importance_only",          "max",  0.0),   # top-k by MAX-reduced importance
         ("random",              "random",                   "mean", 0.0),   # control: random top-k
         ("anti_importance",     "anti_importance",          "mean", 0.0),   # control: bottom-k importance
-        ("hkvd_hi_imp",         "hkvd_then_imp_prune",      "mean", 0.15),  # split: HKVD-pool, keep HIGH-imp
-        ("hkvd_lo_imp",         "hkvd_then_imp_prune_high", "mean", 0.15),  # split: HKVD-pool, keep LOW-imp
+        ("hkvd_hi_imp",         "hkvd_then_imp_prune",      "mean", 0.15),  # HKVD-pool, keep HIGH-imp  (agree)
+        ("hkvd_lo_imp",         "hkvd_then_imp_prune_high", "mean", 0.15),  # HKVD-pool, keep LOW-imp   (HKVD-only quadrant)
+        ("imp_hi_hkvd",         "imp_then_hkvd_prune",      "mean", 0.15),  # imp-pool,  keep HIGH-HKVD (agree)
+        ("imp_lo_hkvd",         "imp_then_hkvd_prune_low",  "mean", 0.15),  # imp-pool,  keep LOW-HKVD  (IMP-only quadrant)
         ("gated_all_hkvd",      "gated_hkvd",               "mean", 0.0),   # gate by mean importance
         ("gated_all_max_hkvd",  "gated_hkvd",               "max",  0.0),   # gate by MAX importance
         ("hkvd_prune",          "hkvd_then_imp_prune",      "mean", PRUNE), # HKVD pre-select → drop low-imp

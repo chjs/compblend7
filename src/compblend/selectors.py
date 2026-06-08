@@ -363,6 +363,60 @@ def hkvd_then_importance_prune(
     return union
 
 
+def importance_then_hkvd_prune(
+    deviations: torch.Tensor,
+    importance: torch.Tensor,
+    recompute_k: int,
+    *,
+    prune_k: int,
+    structural_mask: torch.Tensor | None = None,
+    forced_mask: torch.Tensor | None = None,
+    eligible_mask: torch.Tensor | None = None,
+    keep_low: bool = False,
+) -> torch.Tensor:
+    """Mirror of hkvd_then_importance_prune: importance pre-selects, HKVD trims.
+
+    Importance picks the candidate set FIRST (top-importance tokens always in),
+    then HKVD only TRIMS the `prune_k` survivors. Used for the disagreement-
+    quadrant test:
+      `keep_low=False` → keep HIGH-HKVD survivors  = importance-high ∩ HKVD-high.
+      `keep_low=True`  → keep LOW-HKVD survivors   = importance-high ∩ HKVD-low
+                         (the "importance wants it, HKVD doesn't" quadrant).
+
+    Algorithm: forced included; candidates = eligible & ~structural & ~forced;
+    importance top-`recompute_k` of candidates; drop `prune_k` by HKVD (lowest,
+    or highest if keep_low); union with forced, sorted.
+    """
+    n = int(deviations.numel())
+    forced, structural, eligible = _coerce_masks(
+        n, deviations.device, structural_mask, forced_mask, eligible_mask,
+    )
+    forced_idx = forced.nonzero(as_tuple=False).squeeze(-1)
+
+    cand = (~forced) & (~structural) & eligible
+    if not bool(cand.any().item()):
+        out, _ = torch.sort(forced_idx)
+        return out
+    cand_idx = cand.nonzero(as_tuple=False).squeeze(-1)
+
+    # Importance pre-select over candidates.
+    take = min(max(recompute_k, 1), int(cand_idx.numel()))
+    top_in_cand = torch.topk(importance[cand_idx], k=take).indices
+    imp_sel = cand_idx[top_in_cand]                        # ~recompute_k positions
+
+    # Drop the prune_k lowest-HKVD from the importance set (keep the rest).
+    keep = imp_sel
+    if prune_k > 0 and int(imp_sel.numel()) > prune_k:
+        n_keep = int(imp_sel.numel()) - prune_k
+        hkvd_sel = deviations[imp_sel]
+        keep_local = torch.topk(-hkvd_sel if keep_low else hkvd_sel, k=n_keep).indices
+        keep = imp_sel[keep_local]
+
+    union = torch.cat([forced_idx, keep], dim=0).unique()
+    union, _ = torch.sort(union)
+    return union
+
+
 def hkvd_importance_exclude(
     deviations: torch.Tensor,
     importance: torch.Tensor,
@@ -452,6 +506,12 @@ def _h_hkvd_then_imp_prune(config, dev, imp, k, *, keep_low, **m):
     return hkvd_then_importance_prune(dev, imp, k, prune_k=prune_k, keep_low=keep_low, **m)
 
 
+def _h_imp_then_hkvd_prune(config, dev, imp, k, *, keep_low, **m):
+    # Mirror: importance pre-selects, HKVD trims by importance_prune_ratio OF TOTAL.
+    prune_k = int(int(dev.numel()) * config.importance_prune_ratio)
+    return importance_then_hkvd_prune(dev, imp, k, prune_k=prune_k, keep_low=keep_low, **m)
+
+
 def _h_hkvd_imp_exclude(config, dev, imp, k, **m):
     return hkvd_importance_exclude(dev, imp, k, exclude_percentile=config.gate_percentile, **m)
 
@@ -464,6 +524,8 @@ SELECTOR_REGISTRY = {
     "gated_hkvd":               _h_gated_hkvd,
     "hkvd_then_imp_prune":      lambda c, d, i, k, **m: _h_hkvd_then_imp_prune(c, d, i, k, keep_low=False, **m),
     "hkvd_then_imp_prune_high": lambda c, d, i, k, **m: _h_hkvd_then_imp_prune(c, d, i, k, keep_low=True, **m),
+    "imp_then_hkvd_prune":      lambda c, d, i, k, **m: _h_imp_then_hkvd_prune(c, d, i, k, keep_low=False, **m),
+    "imp_then_hkvd_prune_low":  lambda c, d, i, k, **m: _h_imp_then_hkvd_prune(c, d, i, k, keep_low=True, **m),
     "hkvd_imp_exclude":         _h_hkvd_imp_exclude,
 }
 
@@ -508,6 +570,7 @@ __all__ = [
     "anti_importance",
     "gated_hkvd",
     "hkvd_then_importance_prune",
+    "importance_then_hkvd_prune",
     "hkvd_importance_exclude",
     "SELECTOR_REGISTRY",
     "select_recompute_indices",

@@ -9,8 +9,10 @@ SelectorKind = Literal[
     "hkvd_only",          # baseline — top-k by deviation only
     "importance_only",    # FDI — top-k by importance only (no HKVD)
     "gated_hkvd",         # default — importance gate then HKVD top-k
-    "hkvd_then_imp_prune",  # ablation — HKVD top-k FIRST, then drop lowest-importance (keep HIGH-imp)
-    "hkvd_then_imp_prune_high",  # split-test control — HKVD pre-select, keep LOW-imp (drop high-imp)
+    "hkvd_then_imp_prune",  # HKVD pre-select, keep HIGH-imp survivors  (HKVD∩imp-high)
+    "hkvd_then_imp_prune_high",  # HKVD pre-select, keep LOW-imp survivors  (HKVD∩imp-low quadrant)
+    "imp_then_hkvd_prune",  # importance pre-select, keep HIGH-HKVD survivors (imp∩HKVD-high)
+    "imp_then_hkvd_prune_low",   # importance pre-select, keep LOW-HKVD survivors (imp∩HKVD-low quadrant)
     "hkvd_imp_exclude",   # reuse-safe — EXCLUDE high-importance (stable) from recompute, HKVD within the rest
     "random",             # control — recompute a RANDOM top-k (no signal); proves importance/HKVD carry signal
     "anti_importance",    # control (anti) — recompute the LOWEST-importance top-k
@@ -103,6 +105,7 @@ class CompBlendConfig:
             raise ValueError(f"check_layer must be >= 0, got {self.check_layer}")
         if self.selector not in ("hkvd_only", "importance_only", "gated_hkvd",
                                  "hkvd_then_imp_prune", "hkvd_then_imp_prune_high",
+                                 "imp_then_hkvd_prune", "imp_then_hkvd_prune_low",
                                  "hkvd_imp_exclude", "random", "anti_importance"):
             raise ValueError(f"unknown selector: {self.selector!r}")
         if self.chunk_normalization not in ("none", "rank"):
