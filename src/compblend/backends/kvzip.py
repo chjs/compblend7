@@ -1,38 +1,27 @@
-"""KVzip backend — pre-RoPE K capture for v7-compatible blending.
+"""KVzip backend — pre-RoPE K capture for blending.
 
-What changes vs CompBlend-old's KVzip adapter
-─────────────────────────────────────────────
-OLD: stored `kv.key_cache[layer]` directly. That tensor is the post-RoPE K
-that KVzip's RetainCache holds. A separate `prepare_for_blend` step then had
-to de-rotate at the chunk-local position and re-rotate at the fused-global
-position (2-pass RoPE), which is the source of the de-rotate ambiguity that
-v7 sidesteps.
-
-NEW: install forward hooks on `model.model.layers[li].self_attn.k_proj` and
-`v_proj` BEFORE calling `mk.prefill(text)`. The hook captures k_proj output
+Install forward hooks on `model.model.layers[li].self_attn.k_proj` and
+`v_proj` before calling `mk.prefill(text)`. The hook captures k_proj output
 (shape `[1, seq, H_kv*D]`), which is pre-RoPE K by construction (RoPE is
-applied AFTER projection inside HF's attention forward). At blend time, the
-fusor just calls `apply_rotary_pos_emb` at the new fused position — same
-operation, one direction.
+applied AFTER projection inside HF's attention forward). At blend time the
+fusor calls `apply_rotary_pos_emb` at the new fused position.
 
 Why this is correct
 ───────────────────
 KVzip's `ModelKVzip` wraps a vanilla HF causal LM (`mk.model`). Its `prefill`
 runs `mk.model.forward(prefill_ids)`. Every attention layer's k_proj is the
-standard `nn.Linear`. KVzip's customizations are in `Cache.update()`
-(retain/evict logic) and in the scoring task — neither affects whether
-k_proj is called or what it returns. A forward-hook on k_proj therefore
-captures exactly what HF would have computed.
+standard `nn.Linear`; KVzip's customizations are in `Cache.update()` and in
+the scoring task, neither of which affects what k_proj returns. A forward-hook
+on k_proj therefore captures exactly what HF would have computed.
 
-What we keep from CompBlend-old's adapter
-─────────────────────────────────────────
+Details
+───────
 - Lazy loading of `ModelKVzip` (KVzip is on PYTHONPATH only on GPU pods).
-- Slicing `[:, sink:sink+ctx_len, :]` to strip the sys-prompt prefix that
-  KVzip prepends internally.
-- `kv.score` → `importance` (per-(layer, head, position) salience), carried
-  as a CompBlend extension to the v7 layout. Token-pruning by importance
-  happens downstream (in the benchmark), so no per-head eviction mask is
-  produced here.
+- Slicing `[:, sink:sink+ctx_len, :]` strips the sys-prompt prefix KVzip
+  prepends internally.
+- `kv.score` → `importance` (per-(layer, head, position) salience). Token-
+  pruning by importance happens downstream (in the benchmark), so no per-head
+  eviction mask is produced here.
 """
 from __future__ import annotations
 
@@ -55,9 +44,9 @@ class KVzipConfig:
     """User-facing KVzip knobs.
 
     Attributes:
-        kv_type: "retain" (default, Stage-1-safe) or "evict". Stage 1 expects
-            "retain" because then `kv.key_cache[layer]` is a regular 4D tensor
-            and `kv.score` aligns with simple ctx-local indices.
+        kv_type: "retain" (default) or "evict". "retain" keeps
+            `kv.key_cache[layer]` as a regular 4D tensor and `kv.score`
+            aligned with simple ctx-local indices.
         chunk_id_prefix: identifier prefix in the assembled CompressedChunk.chunk_id.
     """
 

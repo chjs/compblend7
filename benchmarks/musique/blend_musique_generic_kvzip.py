@@ -1,8 +1,7 @@
-"""musique workload with KVzip token-pruned chunk reuse — extends blend_musique_generic.py.
+"""MuSiQue workload with KVzip token-pruned chunk reuse.
 
-This is a copy of `blend_musique_generic.py` (the shim-free CacheBlend musique
-reproduction) with ONE addition: a KVzip *token-pruning* compression scenario on
-top of the same chunked prompt, same dataset, same token-F1 metric.
+A KVzip token-pruning compression scenario on a chunked QA prompt, scored
+with token-F1.
 
 Compression model (token pruning)
 ---------------------------------
@@ -46,11 +45,9 @@ Arms compared (all share the dataset / prompt / chunking / token-F1 of the origi
 
 full_prefill / full_reuse are kvzip-ratio independent (computed once). full_reuse_kvzip
 is recompute-ratio independent (one per kvzip ratio). The blending arms run over the
-full kvzip_ratio × recompute_ratio grid. (A `prefill_kvzip` arm — full-prefill of the
-token-pruned survivors — was intentionally dropped: full-prefilling a token-depleted
-context is not a meaningful upper bound; `full_prefill` is the roofline.)
+full kvzip_ratio × recompute_ratio grid.
 
-Env vars (superset of blend_musique_generic.py):
+Env vars:
     CACHEBLEND_MODEL         HF model id (default meta-llama/Llama-3.1-8B-Instruct)
     CACHEBLEND_DTYPE         model dtype (default bfloat16)
     CACHEBLEND_ATTN_IMPL     attn_implementation (default sdpa)
@@ -137,7 +134,7 @@ DEEP_HI = int(os.environ.get("COMPBLEND_DEEP_HI", "31"))
 CHUNK_NORM = os.environ.get("COMPBLEND_CHUNK_NORM", "rank")          # none | rank (matches config default)
 OUT = Path(os.environ.get("COMPBLEND_OUT", str(_REPO / "logs" / "blend_musique_kvzip.json")))
 
-# Instruction prompts — VERBATIM from blend_musique.py (experiment definition).
+# Instruction prompts (experiment definition).
 PREFIX_PROMPT = "You will be asked a question after reading several passages. Please directly answer the question based on the given passages. Do NOT repeat the question. The answer should be within 5 words..\nPassages:\n"
 QUERY_PROMPT = "\n\nAnswer the question directly based on the given passages. Do NOT repeat the question. The answer should be within 5 words. \nQuestion:"
 

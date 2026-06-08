@@ -1,21 +1,21 @@
 """Token selectors for CompBlend.
 
-Every selector answers ONE question: given per-token HKVD deviation and
-per-token compression importance, which positions should we RECOMPUTE?
-They all share a uniform signature and the same three masks, and they all
-return int64 indices sorted ASCENDING by position (causal attention needs
-monotonically increasing K positions — matches LMCache's `torch.sort`).
+Each selector answers one question: given per-token HKVD deviation and
+per-token compression importance, which positions should we recompute?
+They share a uniform signature and the same three masks, and all return
+int64 indices sorted ascending by position (causal attention needs
+monotonically increasing K positions).
 
 Layout
 ──────
     Primitives      select_topk_sorted, chunk_internal_rank
-    Mask helpers    _coerce_masks, _masked_topk     (kill the boilerplate)
+    Mask helpers    _coerce_masks, _masked_topk
     Selectors       hkvd_only, importance_only, random_select, anti_importance,
                     gated_hkvd, hkvd_then_importance_prune, hkvd_importance_exclude
     Dispatch        SELECTOR_REGISTRY + select_recompute_indices(config, ...)
 
-The fusor calls `select_recompute_indices(config, ...)` and nothing else —
-all selection logic lives here, in one place.
+The fusor calls `select_recompute_indices(config, ...)`; all selection logic
+lives here.
 
 Three masks, shared by every selector
 ──────────────────────────────────────
@@ -25,16 +25,11 @@ Three masks, shared by every selector
                      needs valid logits).
     structural_mask  True ⇒ EXEMPT, never selected (score → −inf). For
                      window/sink-protected positions. Gated by
-                     `config.exempt_structural`. Empty in the KVzip path.
+                     `config.exempt_structural`.
     eligible_mask    The candidate pool — only these MAY be selected (others
-                     → −inf). Enforces "respect compression's choice: don't
-                     resurrect evicted tokens". All-True under token-prune
-                     (whole tokens are kept/dropped); matters at pair-level.
-                     `hkvd_only` ignores it by design (v7/LMCache baseline).
-
-What's NOT here (deferred): additive_rank / rank_product / pareto_layered —
-research alternatives from CompBlend-old. Bring them back only if a study
-needs them.
+                     → −inf): don't resurrect evicted tokens. All-True under
+                     token-prune (whole tokens are kept/dropped). `hkvd_only`
+                     ignores it by design.
 """
 from __future__ import annotations
 
@@ -51,8 +46,7 @@ from compblend.config import CompBlendConfig
 def select_topk_sorted(scores: torch.Tensor, k: int) -> torch.Tensor:
     """Top-k by score, returned as int64 indices sorted ASCENDING by position.
 
-    Causal attention requires K positions to be monotonically increasing
-    (matches LMCache's `top_indices, _ = torch.sort(top_indices)` step).
+    Causal attention requires K positions to be monotonically increasing.
     """
     if k <= 0:
         raise ValueError(f"k must be positive, got {k}")
@@ -74,15 +68,12 @@ def _rank_normalize(scores: torch.Tensor) -> torch.Tensor:
 
 
 def chunk_internal_rank(chunk_importance: torch.Tensor) -> torch.Tensor:
-    """Per-chunk percentile rank — makes importance comparable ACROSS chunks.
+    """Per-chunk percentile rank — makes importance comparable across chunks.
 
-    CompBlend compresses each chunk in ISOLATION, so a chunk's importance is
-    computed against its own reconstruction — raw values are only meaningful
-    *within* a chunk and are not directly comparable across chunks (different
-    isolated prefills; also length bias — CompBlend-old saw ~14× scale ratio
-    between short/long SnapKV chunks). Ranking within each chunk before
-    concatenation puts every chunk on the same [0, 1] scale, which is the
-    principled basis for the cross-chunk global top-k the selectors run.
+    Each chunk is compressed in isolation, so its importance is computed
+    against its own reconstruction and raw values are only meaningful within
+    a chunk. Ranking within each chunk puts every chunk on the same [0, 1]
+    scale, the basis for the cross-chunk global top-k the selectors run.
     """
     return _rank_normalize(chunk_importance)
 
@@ -160,10 +151,10 @@ def hkvd_only(
     eligible_mask: torch.Tensor | None = None,
     honor_eligible: bool = False,
 ) -> torch.Tensor:
-    """Top-k by HKVD deviation only — CacheBlend/v7 baseline. Ignores importance.
+    """Top-k by HKVD deviation only (baseline). Ignores importance.
 
-    Does NOT honor eligibility by default: the v7 baseline is free to pick
-    evicted positions (it predates compression-awareness). Kept for comparison.
+    Does NOT honor eligibility by default: this baseline may pick evicted
+    positions.
     """
     forced, structural, eligible = _coerce_masks(
         int(deviations.numel()), deviations.device,
@@ -237,7 +228,7 @@ def anti_importance(
 
 
 # ──────────────────────────────────────────────────────────────────────────
-# Gated HKVD — paper §3 (importance gates the pool, HKVD picks within)
+# Gated HKVD — importance gates the pool, HKVD picks within
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -251,7 +242,7 @@ def gated_hkvd(
     forced_mask: torch.Tensor | None = None,
     eligible_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    """Paper §3 Gated HKVD: importance gates the candidate set, HKVD picks within it.
+    """Gated HKVD: importance gates the candidate set, HKVD picks within it.
 
     Algorithm:
       1. Include all `forced_mask` positions unconditionally.
@@ -259,10 +250,8 @@ def gated_hkvd(
       3. Keep the top `gate_percentile` fraction of candidates by importance.
       4. From that gated set, pick `recompute_k − forced_count` by HKVD.
 
-    Forced positions are included BEFORE the gate runs (they don't participate
-    in the gate's percentile), so the gate cardinality stays interpretable —
-    unlike CompBlend-old, which boosted importance[forced]=+inf and let forced
-    saturate the gate threshold.
+    Forced positions are included before the gate runs (they don't participate
+    in the gate's percentile), so the gate cardinality stays interpretable.
     """
     n = int(deviations.numel())
     if int(importance.numel()) != n:
@@ -493,7 +482,7 @@ def select_recompute_indices(
 
     Structural exemption is gated by `config.exempt_structural` (when False,
     no position is exempt). `eligible_mask` is the compression-aware candidate
-    pool — honored by every selector except `hkvd_only` (v7 baseline, by design).
+    pool — honored by every selector except `hkvd_only` (baseline, by design).
     """
     try:
         handler = SELECTOR_REGISTRY[config.selector]

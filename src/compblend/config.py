@@ -1,15 +1,4 @@
-"""CompBlend runtime configuration — slimmed to Stage-1 fields only.
-
-Compared with CompBlend-old's CompBlendConfig, this drops:
-    * `attention_kernel` / `varlen_threshold` — v7 fusor only uses SDPA;
-      varlen support is Stage-2 work.
-    * `check_layers` tuple + `recompute_ratios` cascade — Stage 1 uses
-      a single check_layer. Cascade is Stage 2.
-    * `hkvd_compute_dtype` — v7's `kv_deviation` already upcasts to fp32.
-    * `boundary_force_count` — EPIC AttnLink is a research extension, not in
-      paper §3. Re-add only when needed.
-    * `alpha` — additive_rank selector deferred; not currently a default.
-"""
+"""CompBlend runtime configuration."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,9 +6,9 @@ from typing import Literal
 
 
 SelectorKind = Literal[
-    "hkvd_only",          # v7 baseline — top-k by deviation only
+    "hkvd_only",          # baseline — top-k by deviation only
     "importance_only",    # FDI — top-k by importance only (no HKVD)
-    "gated_hkvd",         # paper §3 default — importance gate then HKVD top-k
+    "gated_hkvd",         # default — importance gate then HKVD top-k
     "hkvd_then_imp_prune",  # ablation — HKVD top-k FIRST, then drop lowest-importance (keep HIGH-imp)
     "hkvd_then_imp_prune_high",  # split-test control — HKVD pre-select, keep LOW-imp (drop high-imp)
     "hkvd_imp_exclude",   # reuse-safe — EXCLUDE high-importance (stable) from recompute, HKVD within the rest
@@ -29,9 +18,9 @@ SelectorKind = Literal[
 
 
 ImportanceAggregation = Literal[
-    "check_layer",   # current default — importance at check_layer only, mean over heads
-    "all_layer",     # CompBlend-old style — mean over ALL layers AND heads (H3 ablation)
-    "deep",          # mean over DEEP layers [L//4, 3L//4) and heads (where imp↔dev corr is strongest)
+    "check_layer",   # default — importance at check_layer only, mean over heads
+    "all_layer",     # mean over ALL layers AND heads
+    "deep",          # mean over DEEP layers [L//4, 3L//4) and heads
     "all_layer_max", # MAX over ALL (layer, head): per-(layer,head) rank-normalized then max —
                      # "salient in ANY head/layer" (avoids the mean's blur of single-head salience)
     "deep_max",      # same MAX reduction but over DEEP layers only
@@ -39,11 +28,8 @@ ImportanceAggregation = Literal[
 
 
 ChunkNormalization = Literal[
-    "none",     # raw per-chunk importance, concatenated as-is (subject to
-                # length bias for backends like SnapKV — see CompBlend-old's
-                # 4a-1 finding of ~14× scale ratio between short/long docs).
-    "rank",     # per-chunk percentile rank in [0, 1]. Length-fair across
-                # chunks. Recommended when blending chunks of unequal length.
+    "none",     # raw per-chunk importance, concatenated as-is
+    "rank",     # per-chunk percentile rank in [0, 1]. Length-fair across chunks.
 ]
 
 
@@ -51,15 +37,15 @@ ChunkNormalization = Literal[
 class CompBlendConfig:
     """Configuration consumed by `fuse_selective_compblend`."""
 
-    # Layer at which HKVD selection runs. v7 default = 1 (one full forward
-    # pass at layer 0; selection at layer 1; sparse from layer 1 onward).
+    # Layer at which HKVD selection runs (one full forward pass at layer 0;
+    # selection at this layer; sparse from this layer onward).
     check_layer: int = 1
 
-    # Fraction of fused-prompt tokens to recompute. 0 → fall back to
-    # full_reuse, 1 → fall back to full_recompute (v7 boundary shortcuts).
+    # Fraction of fused-prompt tokens to recompute. 0 → full_reuse,
+    # 1 → full_recompute (boundary shortcuts).
     recompute_ratio: float = 0.15
 
-    # Token selector. Default is paper §3 Gated HKVD.
+    # Token selector.
     selector: SelectorKind = "gated_hkvd"
 
     # For gated_hkvd: importance percentile threshold over non-forced,
@@ -73,10 +59,9 @@ class CompBlendConfig:
     # recompute_ratio − importance_prune_ratio (e.g. 0.20 − 0.05 = 0.15). 0.0 → no prune.
     importance_prune_ratio: float = 0.0
 
-    # H3 ablation: how the gate's per-token importance is aggregated from the
-    # backend's [n_layers, H_kv, chunk_len] importance. "check_layer" = layer
-    # `check_layer` only, mean over heads (current). "all_layer" = mean over ALL
-    # layers AND heads (CompBlend-old style — richer global salience). Only
+    # How per-token importance is aggregated from the backend's
+    # [n_layers, H_kv, chunk_len] importance. "check_layer" = check_layer only,
+    # mean over heads. "all_layer" = mean over ALL layers AND heads. Only
     # affects selectors that use importance (gated_hkvd, hkvd_then_imp_prune).
     importance_aggregation: ImportanceAggregation = "check_layer"
 
@@ -86,10 +71,9 @@ class CompBlendConfig:
     deep_layer_lo: int | None = None
     deep_layer_hi: int | None = None
 
-    # How HKVD deviation is reduced over heads into a per-token score. "sum" (default,
-    # v7) = sum of squared (K_fresh−K_cached) over all heads*dims (additive — many
-    # moderate heads can outrank one large head). "max" = per-head SSE then MAX over
-    # heads ("needs recompute in ANY head"), catching single-head-critical reuse errors.
+    # How HKVD deviation is reduced over heads into a per-token score. "sum"
+    # (default) = sum of squared (K_fresh−K_cached) over all heads*dims. "max" =
+    # per-head SSE then MAX over heads ("needs recompute in ANY head").
     hkvd_head_reduce: str = "sum"
 
     # Exempt structural (window / sink) tokens from selector pressure.
@@ -97,12 +81,11 @@ class CompBlendConfig:
     # is never returned as a selected token. Its cached K/V stays in use.
     exempt_structural: bool = True
 
-    # How per-chunk importance vectors are combined into the fused-prompt
-    # `importance_scores`. "rank" (default) applies within-chunk percentile
-    # rank before concat; "none" concatenates raw. Default is "rank" because
-    # CompBlend compresses each chunk in ISOLATION, so raw importance is only
-    # comparable WITHIN a chunk — ranking per chunk is the principled basis
-    # for the cross-chunk global top-k the selectors run.
+    # How per-chunk importance is combined into the fused-prompt importance.
+    # "rank" (default) applies within-chunk percentile rank before concat;
+    # "none" concatenates raw. Default is "rank" because each chunk is
+    # compressed in isolation, so raw importance is only comparable within a
+    # chunk — ranking per chunk is the basis for the cross-chunk global top-k.
     chunk_normalization: ChunkNormalization = "rank"
 
     def __post_init__(self) -> None:

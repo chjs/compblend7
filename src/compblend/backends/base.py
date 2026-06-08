@@ -1,18 +1,8 @@
-"""Backend contract (Stage 1) — pre-RoPE K storage, v7-compatible.
+"""Backend contract — pre-RoPE K storage.
 
-Why this differs from CompBlend-old's `backends/base.py`:
-
-CompBlend-old stored POST-RoPE K (RoPE applied at chunk-local positions) and
-relied on a 2-pass `prepare_for_blend` that de-rotated then re-rotated. v7
-proves that storing PRE-RoPE K + applying RoPE on-the-fly in the fusor is
-both simpler and bit-exact (`apply_rotary_pos_emb` is a rotation; rotating a
-pre-RoPE K at any target position is the canonical operation).
-
-So this base class:
-    - drops `prepare_for_blend` entirely (the fusor handles RoPE)
-    - removes `kept_positions` (positions are implicit [0, chunk_len) — the
-      chunk text covers a contiguous range)
-    - keeps `importance` (CompBlend's extension over v7)
+Stores PRE-RoPE K and applies RoPE on-the-fly in the fusor (rotating a
+pre-RoPE K to any target position is the canonical operation). Positions are
+implicit [0, chunk_len); each entry carries per-token `importance`.
 
 Compression is token-prune-only: whole tokens are kept or dropped before
 blending, so there is no per-head eviction mask. The dense
@@ -51,7 +41,7 @@ class CompressionBudget:
 class CompressedChunk:
     """A single text chunk's compressed KV cache.
 
-    Storage convention (Stage 1):
+    Storage convention:
       * `key_cache[layer]` and `value_cache[layer]` are dense at chunk length:
         shape `[1, chunk_len, num_kv_heads * head_dim]`. They store **pre-RoPE**
         K (k_proj output) and V (v_proj output) respectively. Both come straight
@@ -60,20 +50,11 @@ class CompressedChunk:
       * `importance[L, H_kv, chunk_len]` is the backend's per-token salience
         score, in fp32. Used to decide which whole tokens to keep when
         token-pruning the chunk.
-      * `is_structural[chunk_len]` flags positions exempt from selector pressure
-        (e.g. SnapKV's window region). For eviction backends without that
-        notion (KVzip), it is all False.
+      * `is_structural[chunk_len]` flags positions exempt from selector
+        pressure. For KVzip it is all False.
 
-    What's intentionally NOT here:
-      * `kept_positions` / `target_positions_for_blend()` — positions are
-        implicit `[0, chunk_len)`. The fused-prompt position of a chunk is
-        decided by the pipeline at blend time (just `[blend_start,
-        blend_start+chunk_len)`); RoPE shift is `apply_rotary_pos_emb` over
-        those positions, no chunk-local→global mapping needed.
-      * `content_origin` / `content_length` — KVzip-style sys-prompt prepend
-        is handled inside the backend adapter (the adapter slices the
-        captured K/V to content-only before returning). Downstream code sees
-        only the chunk's own tokens.
+    Positions are implicit `[0, chunk_len)`; the fused-prompt position of a
+    chunk is decided at blend time and RoPE is applied over those positions.
     """
 
     # ---- identity ----
@@ -121,11 +102,6 @@ class CompressedChunk:
     # tensors are moved to CPU and made contiguous before writing so files
     # are portable across machines and devices. Load rehydrates onto CPU by
     # default; call `.to(device)` after loading to move to GPU.
-    #
-    # Why simple (vs CompBlend-old's `compact=True` flat layout): the disk
-    # footprint matters in Stage 2 (corpus-level caches). For Stage 1 we
-    # value implementation simplicity over disk efficiency — a compact
-    # writer can be added later as a non-breaking format v2.
 
     SERIALIZATION_VERSION: int = 1
 
@@ -209,14 +185,13 @@ class CompressedChunk:
 
 
 def to_kvstore_entry(chunk: CompressedChunk) -> dict[str, Any]:
-    """Convert a CompressedChunk into a v7-KVStore-compatible dict.
+    """Convert a CompressedChunk into a KVStore-compatible dict.
 
-    The CompBlend extensions (importance, is_structural) are carried as extra
-    keys on the entry — v7's `KVStore` is a plain dict keyed by chunk_id with
-    no schema enforcement on the value, so adding keys is safe and
-    `fuse_selective_compblend` reads them in M2.
+    `KVStore` is a plain dict keyed by chunk_id, so `importance` and
+    `is_structural` are carried as extra keys that `fuse_selective_compblend`
+    reads.
 
-    Layout consumed by v7's `fuse_selective` (and our fork):
+    Layout:
         entry["K"][li] : Tensor (1, chunk_len, H_kv*D)   pre-RoPE
         entry["V"][li] : Tensor (1, chunk_len, H_kv*D)
         entry["importance"]    : Tensor (num_layers, H_kv, chunk_len)  fp32

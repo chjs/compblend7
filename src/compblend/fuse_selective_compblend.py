@@ -1,27 +1,16 @@
-"""CompBlend's selective-recompute fusor — fork of cacheblend.fusor.fuse_selective.
+"""CompBlend's selective-recompute fusor.
 
-One extension over v7:
+Selection runs over per-token HKVD deviation + compression importance and is
+dispatched through `selectors.select_recompute_indices(config, ...)`. The last
+position (and any chunk not in the KVStore) is passed as `forced_mask`;
+window/sink positions as `structural_mask`.
 
-1. **Gated HKVD selector** (paper §3) — `selectors.gated_hkvd` runs over
-   deviation+importance instead of v7's HKVD-only top-k. Selection is
-   dispatched through `selectors.select_recompute_indices(config, ...)`.
-   Gap positions (chunks not in KVStore) and the last position are passed
-   as `forced_mask`. Structural (window) positions are passed as
-   `structural_mask`.
+Token-prune only: compression is head-uniform (whole tokens are kept or
+dropped before blending), so the SDPA `attn_mask` at the recompute layers is
+the plain sparse-causal slice `causal_mask_full[:, :, top_indices, :total_seq]`
+— no per-head eviction overlay.
 
-This is the TOKEN-PRUNE-ONLY variant: compression is head-uniform (whole
-tokens are kept or dropped before blending), so the SDPA `attn_mask` at the
-recompute layers is the plain sparse-causal slice
-`causal_mask_full[:, :, top_indices, :total_seq]`. There is no per-head
-eviction overlay.
-
-The function falls back gracefully when KVStore entries are pure v7-style
-(no importance) — `gated_hkvd` degenerates to HKVD-only when importance is
-uniform.
-
-Reference for the unmodified algorithm — keep these line numbers in sync
-when v7 changes:
-    src/external/cacheblend/src/cacheblend/fusor.py:193-497
+When KVStore entries carry no importance, `gated_hkvd` degenerates to HKVD-only.
 """
 from __future__ import annotations
 
@@ -109,11 +98,10 @@ def _full_fresh_layers(
     past_key_values: DynamicCache,
     layer_range: range,
 ) -> torch.Tensor:
-    """Run the unmodified HF decoder layer call for layers in `layer_range`.
+    """Run the standard HF decoder layer call for layers in `layer_range`.
 
-    Matches v7 `fusor.py:313-323` verbatim — separated into a helper for
-    readability. Returns updated hidden_states; past_key_values is mutated
-    in-place via DynamicCache.update inside each layer.
+    Returns updated hidden_states; past_key_values is mutated in-place via
+    DynamicCache.update inside each layer.
     """
     for li in layer_range:
         out = inner.layers[li](
@@ -189,7 +177,7 @@ def fuse_selective_compblend(
     flags: dict | None = None,
     selector_stats: dict | None = None,
 ):
-    """Paper §4 selective recompute + paper §3 Gated HKVD (token-prune-only).
+    """Selective recompute + Gated HKVD (token-prune-only).
 
     Args:
         layerwise_model: `cacheblend.LayerwiseModel` (wraps the HF causal LM).
@@ -211,7 +199,7 @@ def fuse_selective_compblend(
         decode. When `return_hkvd_indices=True`, additionally returns the
         selected top_indices.
 
-    Boundary safe-shortcuts (mirrored from v7):
+    Boundary safe-shortcuts:
       * recompute_ratio == 0   → `fuse_full_reuse`.
       * recompute_ratio >= 1   → `fuse_full_recompute` (no KVStore reads).
       * len(chunks) <= 1       → `fuse_full_recompute`.
@@ -306,12 +294,12 @@ def fuse_selective_compblend(
         if not kv_store.has(chunk.chunk_id):
             raise KeyError(
                 f"fuse_selective_compblend: chunk {chunk.chunk_id!r} not in "
-                f"KVStore. Stage 1 requires all chunks pre-cached. "
+                f"KVStore. All chunks must be pre-cached. "
                 f"Precompute sys/query chunks via precompute_chunk_kv before "
                 f"calling fuse."
             )
         entry = kv_store.get(chunk.chunk_id)
-        # K, V — required, layout matches v7
+        # K, V — required
         for li in range(n_layers):
             K_stored_pre[li][:, start:end, :] = entry["K"][li]
             V_stored[li][:, start:end, :] = entry["V"][li]
@@ -320,9 +308,9 @@ def fuse_selective_compblend(
             entry, chunk_len=end - start, n_layers=n_layers,
             n_kv_heads=num_kv_heads, device=device,
         )
-        # Per-token importance for the gate. H3 ablation:
+        # Per-token importance for the gate:
         #   "check_layer" → layer `check_layer` only, mean over heads (default)
-        #   "all_layer"   → mean over ALL layers AND heads (CompBlend-old style)
+        #   "all_layer"   → mean over ALL layers AND heads
         if config.importance_aggregation == "all_layer":
             chunk_imp_1d = chunk_imp.mean(dim=(0, 1))
         elif config.importance_aggregation == "deep":
@@ -435,9 +423,8 @@ def fuse_selective_compblend(
             flags["deviations"] = deviations.detach().to("cpu")
 
         # Forced positions: last position (greedy decode needs valid logits).
-        # In Stage 1, all chunks are required to be in KVStore, so there
-        # are no "gap" positions from missing entries. The last-position
-        # force is the only forced mask.
+        # All chunks are in KVStore, so there are no "gap" positions from
+        # missing entries — the last position is the only forced mask.
         forced_mask = torch.zeros(total_seq, dtype=torch.bool, device=device)
         forced_mask[-1] = True
 
