@@ -38,9 +38,16 @@ class CompBlendConfig:
     # selection at this layer; sparse from this layer onward).
     check_layer: int = 1
 
-    # Fraction of fused-prompt tokens to recompute. 0 → full_reuse,
-    # 1 → full_recompute (boundary shortcuts).
+    # Fraction of tokens to recompute. 0 → full_reuse, 1 → full_recompute
+    # (boundary shortcuts). When force_last_chunk is set, this fraction applies
+    # to the cached (non-query) context only.
     recompute_ratio: float = 0.15
+
+    # Realistic serving: treat the last chunk as the live query suffix —
+    # prefill it fresh against the blended cached KV (force-recompute its whole
+    # span) instead of reusing isolated KV. The query is then never stale, and
+    # recompute_ratio budgets only the cached prefix+document context.
+    force_last_chunk: bool = False
 
     # Token selector.
     selector: SelectorKind = "gated_hkvd"

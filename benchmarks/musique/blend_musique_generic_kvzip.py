@@ -12,6 +12,10 @@ the sequence entirely. Because pruning is head-uniform, the surviving tokens car
 a full (all-heads) KV → the recompute-layer attention mask is the plain
 sparse-causal slice (no per-head attention mask is ever needed).
 
+Serving model: the prefix + documents are the cached, reusable context; the query
+is the live suffix, always prefilled fresh against the blended document KV (never
+reused). recompute_ratio therefore budgets only the cached (non-query) context.
+
 Arms compared (all share the dataset / prompt / chunking / token-F1 of the original)
 ------------------------------------------------------------------------------------
   full_prefill        chunk token_ids concatenated → one standard prefill from
@@ -20,8 +24,8 @@ Arms compared (all share the dataset / prompt / chunking / token-F1 of the origi
                       container so this sees the IDENTICAL token sequence as the
                       other arms (fair comparison, no boundary-tokenization confound).
                       This is the full-prefill ROOFLINE (best score).
-  full_reuse          uncompressed per-chunk KV recombined → reuse, NO recompute.
-  full_reuse_kvzip    KVzip-token-pruned per-chunk KV recombined → reuse, NO recompute.
+  full_reuse          reuse uncompressed doc KV, NO doc recompute, fresh query.
+  full_reuse_kvzip    reuse token-pruned doc KV, NO doc recompute, fresh query.
 
   Blending arms (token-pruned chunks → select top-k tokens → selective recompute):
   selectors —
@@ -228,7 +232,8 @@ def _run_compblend(lw, chunks, kv_store, selector, recompute_ratio, *, reduce="m
     cfg = CompBlendConfig(
         check_layer=CHECK_LAYER, recompute_ratio=recompute_ratio + prune, selector=selector,
         gate_percentile=GATE_PCT, importance_prune_ratio=prune, importance_reduce=reduce,
-        hkvd_head_reduce=HKVD_REDUCE, chunk_normalization=CHUNK_NORM)
+        hkvd_head_reduce=HKVD_REDUCE, chunk_normalization=CHUNK_NORM,
+        force_last_chunk=True)   # query is the live suffix — prefill fresh on blended doc KV
     out = fuse_selective_compblend(lw, chunks, kv_store, cfg,
                                    return_layerwise_output=True, last_logits_only=True)
     return out

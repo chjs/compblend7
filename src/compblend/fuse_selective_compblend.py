@@ -396,13 +396,19 @@ def fuse_selective_compblend(
         if flags is not None:
             flags["deviations"] = deviations.detach().to("cpu")
 
-        # Forced positions: last position (greedy decode needs valid logits).
-        # All chunks are in KVStore, so there are no "gap" positions from
-        # missing entries — the last position is the only forced mask.
+        # Forced positions: always the last position (greedy decode needs valid
+        # logits). With force_last_chunk, the whole last chunk (the live query
+        # suffix) is forced — prefilled fresh against the blended cached KV — and
+        # recompute_ratio budgets only the cached (non-query) context.
         forced_mask = torch.zeros(total_seq, dtype=torch.bool, device=device)
         forced_mask[-1] = True
-
-        recompute_k = max(int(total_seq * config.recompute_ratio), 1)
+        if config.force_last_chunk and len(chunks) > 1:
+            last_start = offsets[-1][0]
+            forced_mask[last_start:] = True
+            n_forced = int(forced_mask.sum().item())
+            recompute_k = n_forced + int((total_seq - n_forced) * config.recompute_ratio)
+        else:
+            recompute_k = max(int(total_seq * config.recompute_ratio), 1)
         top_indices = select_recompute_indices(
             config,
             deviations,
