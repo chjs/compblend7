@@ -227,6 +227,31 @@ def anti_importance(
                         eligible=eligible, honor_eligible=True)
 
 
+def position_select(
+    deviations: torch.Tensor,
+    importance: torch.Tensor,
+    recompute_k: int,
+    *,
+    structural_mask: torch.Tensor | None = None,
+    forced_mask: torch.Tensor | None = None,
+    eligible_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Positional baseline: recompute the LAST-k positions (ignores both signals).
+
+    Tests whether HKVD's advantage is just "recompute later tokens" (later chunks
+    gain the most cross-chunk context, so deviation skews late). If this matches
+    HKVD, position alone explains it; if it underperforms, deviation adds
+    content-level signal beyond position.
+    """
+    n = int(deviations.numel())
+    forced, structural, eligible = _coerce_masks(
+        n, deviations.device, structural_mask, forced_mask, eligible_mask,
+    )
+    scores = torch.arange(n, dtype=torch.float32, device=deviations.device)
+    return _masked_topk(scores, recompute_k, forced=forced, structural=structural,
+                        eligible=eligible, honor_eligible=True)
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Gated HKVD — importance gates the pool, HKVD picks within
 # ──────────────────────────────────────────────────────────────────────────
@@ -495,6 +520,10 @@ def _h_anti_importance(config, dev, imp, k, **m):
     return anti_importance(dev, imp, k, **m)
 
 
+def _h_position(config, dev, imp, k, **m):
+    return position_select(dev, imp, k, **m)
+
+
 def _h_gated_hkvd(config, dev, imp, k, **m):
     return gated_hkvd(dev, imp, k, gate_percentile=config.gate_percentile, **m)
 
@@ -521,6 +550,7 @@ SELECTOR_REGISTRY = {
     "importance_only":          _h_importance_only,
     "random":                   _h_random,
     "anti_importance":          _h_anti_importance,
+    "position":                 _h_position,
     "gated_hkvd":               _h_gated_hkvd,
     "hkvd_then_imp_prune":      lambda c, d, i, k, **m: _h_hkvd_then_imp_prune(c, d, i, k, keep_low=False, **m),
     "hkvd_then_imp_prune_high": lambda c, d, i, k, **m: _h_hkvd_then_imp_prune(c, d, i, k, keep_low=True, **m),
@@ -568,6 +598,7 @@ __all__ = [
     "importance_only",
     "random_select",
     "anti_importance",
+    "position_select",
     "gated_hkvd",
     "hkvd_then_importance_prune",
     "importance_then_hkvd_prune",

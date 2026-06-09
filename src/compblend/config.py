@@ -16,6 +16,7 @@ SelectorKind = Literal[
     "hkvd_imp_exclude",   # reuse-safe — EXCLUDE high-importance (stable) from recompute, HKVD within the rest
     "random",             # control — recompute a RANDOM top-k (no signal); proves importance/HKVD carry signal
     "anti_importance",    # control (anti) — recompute the LOWEST-importance top-k
+    "position",           # control (positional) — recompute the LAST-k positions, ignoring both signals
 ]
 
 
@@ -106,7 +107,7 @@ class CompBlendConfig:
         if self.selector not in ("hkvd_only", "importance_only", "gated_hkvd",
                                  "hkvd_then_imp_prune", "hkvd_then_imp_prune_high",
                                  "imp_then_hkvd_prune", "imp_then_hkvd_prune_low",
-                                 "hkvd_imp_exclude", "random", "anti_importance"):
+                                 "hkvd_imp_exclude", "random", "anti_importance", "position"):
             raise ValueError(f"unknown selector: {self.selector!r}")
         if self.chunk_normalization not in ("none", "rank"):
             raise ValueError(

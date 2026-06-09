@@ -267,6 +267,7 @@ def main() -> int:
         ("importance_only_max", "importance_only",          "max",  0.0),   # top-k by MAX-reduced importance
         ("random",              "random",                   "mean", 0.0),   # control: random top-k
         ("anti_importance",     "anti_importance",          "mean", 0.0),   # control: bottom-k importance
+        ("position",            "position",                 "mean", 0.0),   # control: last-k by position
         ("hkvd_hi_imp",         "hkvd_then_imp_prune",      "mean", 0.15),  # HKVD-pool, keep HIGH-imp  (agree)
         ("hkvd_lo_imp",         "hkvd_then_imp_prune_high", "mean", 0.15),  # HKVD-pool, keep LOW-imp   (HKVD-only quadrant)
         ("imp_hi_hkvd",         "imp_then_hkvd_prune",      "mean", 0.15),  # imp-pool,  keep HIGH-HKVD (agree)
