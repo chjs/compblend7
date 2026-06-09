@@ -252,6 +252,32 @@ def position_select(
                         eligible=eligible, honor_eligible=True)
 
 
+def score_fuse(
+    deviations: torch.Tensor,
+    importance: torch.Tensor,
+    recompute_k: int,
+    *,
+    alpha: float,
+    structural_mask: torch.Tensor | None = None,
+    forced_mask: torch.Tensor | None = None,
+    eligible_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Top-k by a fused score: alpha*rank(deviation) + (1-alpha)*rank(importance).
+
+    Direct score fusion of the two signals — the approach the paper avoids (it
+    uses gating instead, arguing fusion is unreliable when the signals are
+    negatively correlated). Rank-normalizing each to [0,1] makes them scale-fair.
+    alpha=1 → pure HKVD; alpha=0 → pure importance.
+    """
+    n = int(deviations.numel())
+    forced, structural, eligible = _coerce_masks(
+        n, deviations.device, structural_mask, forced_mask, eligible_mask,
+    )
+    fused = alpha * _rank_normalize(deviations.float()) + (1.0 - alpha) * _rank_normalize(importance.float())
+    return _masked_topk(fused, recompute_k, forced=forced, structural=structural,
+                        eligible=eligible, honor_eligible=True)
+
+
 # ──────────────────────────────────────────────────────────────────────────
 # Gated HKVD — importance gates the pool, HKVD picks within
 # ──────────────────────────────────────────────────────────────────────────
@@ -524,6 +550,10 @@ def _h_position(config, dev, imp, k, **m):
     return position_select(dev, imp, k, **m)
 
 
+def _h_score_fuse(config, dev, imp, k, **m):
+    return score_fuse(dev, imp, k, alpha=config.fuse_alpha, **m)
+
+
 def _h_gated_hkvd(config, dev, imp, k, **m):
     return gated_hkvd(dev, imp, k, gate_percentile=config.gate_percentile, **m)
 
@@ -551,6 +581,7 @@ SELECTOR_REGISTRY = {
     "random":                   _h_random,
     "anti_importance":          _h_anti_importance,
     "position":                 _h_position,
+    "score_fuse":               _h_score_fuse,
     "gated_hkvd":               _h_gated_hkvd,
     "hkvd_then_imp_prune":      lambda c, d, i, k, **m: _h_hkvd_then_imp_prune(c, d, i, k, keep_low=False, **m),
     "hkvd_then_imp_prune_high": lambda c, d, i, k, **m: _h_hkvd_then_imp_prune(c, d, i, k, keep_low=True, **m),
@@ -599,6 +630,7 @@ __all__ = [
     "random_select",
     "anti_importance",
     "position_select",
+    "score_fuse",
     "gated_hkvd",
     "hkvd_then_importance_prune",
     "importance_then_hkvd_prune",

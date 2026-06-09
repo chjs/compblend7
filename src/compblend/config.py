@@ -17,6 +17,7 @@ SelectorKind = Literal[
     "random",             # control — recompute a RANDOM top-k (no signal); proves importance/HKVD carry signal
     "anti_importance",    # control (anti) — recompute the LOWEST-importance top-k
     "position",           # control (positional) — recompute the LAST-k positions, ignoring both signals
+    "score_fuse",         # ablation — top-k by alpha*rank(deviation)+(1-alpha)*rank(importance)
 ]
 
 
@@ -51,6 +52,9 @@ class CompBlendConfig:
     # span) instead of reusing isolated KV. The query is then never stale, and
     # recompute_ratio budgets only the cached prefix+document context.
     force_last_chunk: bool = False
+
+    # For score_fuse: weight on deviation in alpha*rank(dev)+(1-alpha)*rank(imp).
+    fuse_alpha: float = 0.5
 
     # Token selector.
     selector: SelectorKind = "gated_hkvd"
@@ -107,7 +111,8 @@ class CompBlendConfig:
         if self.selector not in ("hkvd_only", "importance_only", "gated_hkvd",
                                  "hkvd_then_imp_prune", "hkvd_then_imp_prune_high",
                                  "imp_then_hkvd_prune", "imp_then_hkvd_prune_low",
-                                 "hkvd_imp_exclude", "random", "anti_importance", "position"):
+                                 "hkvd_imp_exclude", "random", "anti_importance", "position",
+                                 "score_fuse"):
             raise ValueError(f"unknown selector: {self.selector!r}")
         if self.chunk_normalization not in ("none", "rank"):
             raise ValueError(
