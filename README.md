@@ -54,8 +54,23 @@ src/
   external/
     cacheblend/        — submodule: CacheBlend core (LayerwiseModel, KVStore, precompute)
     KVzip/                   — submodule: KVzip compression (importance scoring)
-benchmarks/musique/          — blend_musique_generic_kvzip.py + utils.py + inputs/
+benchmarks/musique/          — multi-hop QA workload (token-F1): blend_musique_generic_kvzip.py + utils.py + inputs/
+benchmarks/multinews/        — multi-doc summarization workload (ROUGE-L): blend_multinews_generic_kvzip.py + build_inputs.py + utils.py
+docs/cacheblend_and_longbench.md — CacheBlend paper analysis + LongBench dataset review (why Multi-News)
 ```
+
+## Datasets
+
+Two multi-document workloads share the same blending machinery and arm set, so
+results are directly comparable across task families:
+
+| workload | task | metric | inputs |
+|---|---|---|---|
+| `benchmarks/musique` | multi-hop QA | token-F1 | `inputs/musique_s.json` (committed, 150 ex) |
+| `benchmarks/multinews` | multi-doc summarization (LongBench Multi-News) | ROUGE-L | build with `benchmarks/multinews/build_inputs.py` (needs HF access) |
+
+See `docs/cacheblend_and_longbench.md` for the CacheBlend paper analysis and the
+LongBench dataset review that motivates Multi-News.
 
 ## Install (GPU pod, e.g. vast.ai — `pytorch:2.4.1-cuda12.4-cudnn9-devel`)
 

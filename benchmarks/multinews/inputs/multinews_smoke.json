@@ -1,0 +1,19 @@
+[
+  {
+    "ctxs": [
+      {"title": "", "text": "SYNTHETIC SMOKE FIXTURE (not real Multi-News data). City council approved a new downtown bike-lane network on Tuesday. The plan adds 12 miles of protected lanes over two years and reallocates two car lanes on Main Street. Supporters cited safety; the vote was 6 to 1."},
+      {"title": "", "text": "SYNTHETIC SMOKE FIXTURE (not real Multi-News data). Local business owners gave mixed reactions to the bike-lane vote. Some worried about parking loss on Main Street, while cafe owners near the riverfront welcomed more foot traffic. The city promised a small-business impact study before construction begins."},
+      {"title": "", "text": "SYNTHETIC SMOKE FIXTURE (not real Multi-News data). Construction on the first bike-lane segment is scheduled to start in the spring. Officials said the project is funded by a federal transportation grant and will not raise local taxes. A public comment period runs through next month."}
+    ],
+    "question": "",
+    "answers": ["The city council approved a 12-mile protected bike-lane network in a 6-1 vote, drawing mixed reactions from business owners over parking and foot traffic; construction starts in spring, funded by a federal grant with no new local taxes."]
+  },
+  {
+    "ctxs": [
+      {"title": "", "text": "SYNTHETIC SMOKE FIXTURE (not real Multi-News data). Researchers reported a new battery chemistry that charges to 80 percent in under ten minutes in lab tests. The team said the design uses no cobalt and relies on abundant materials."},
+      {"title": "", "text": "SYNTHETIC SMOKE FIXTURE (not real Multi-News data). Analysts cautioned that lab results rarely translate directly to mass production. Scaling the new battery would require new manufacturing lines, and durability over thousands of cycles is still unproven."}
+    ],
+    "question": "",
+    "answers": ["Researchers unveiled a fast-charging, cobalt-free battery that hit 80 percent charge in under ten minutes in the lab, though analysts warned that manufacturing scale-up and long-term durability remain unproven."]
+  }
+]
